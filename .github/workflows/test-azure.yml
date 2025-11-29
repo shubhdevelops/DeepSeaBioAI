@@ -1,0 +1,17 @@
+name: Test Azure SAS Access
+
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Azure CLI
+        run: sudo apt-get update && sudo apt-get install -y azure-cli
+
+      - name: Test List Containers
+        run: |
+          az storage container list \
+            --account-name deepseabioaistorage \
+            --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
