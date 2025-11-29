@@ -1,0 +1,70 @@
+name: DeepSeaBioAI BLAST Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_name:
+        description: "Name of the cleaned FASTQ file in Azure cleandna container"
+        required: true
+
+jobs:
+  blast-job:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install BLAST+
+      run: sudo apt-get update && sudo apt-get install -y ncbi-blast+
+
+    - name: Install Azure CLI
+      run: sudo apt-get install -y azure-cli
+
+    - name: Download cleaned FASTQ from Azure (cleandna)
+      run: |
+        mkdir -p data/cleanedna
+        az storage blob download \
+          --account-name YOUR_ACCOUNT_NAME \
+          --container-name cleandna \
+          --name ${{ github.event.inputs.sample_name }} \
+          --file data/cleanedna/${{ github.event.inputs.sample_name }} \
+          --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
+
+    - name: Convert FASTQ → FASTA (required for BLAST)
+      run: |
+        sudo apt-get install -y seqtk
+        mkdir -p data/fasta
+        seqtk seq -a data/cleanedna/${{ github.event.inputs.sample_name }} > data/fasta/query.fa
+
+    - name: Download ALL Reference Databases (referencedb)
+      run: |
+        mkdir -p referencedb
+        for DB in 16S 18S 28S ITS SSU; do
+          echo "Downloading $DB DB..."
+          az storage blob download-batch \
+            --account-name YOUR_ACCOUNT_NAME \
+            --source referencedb/$DB \
+            --destination referencedb/$DB \
+            --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
+        done
+
+    - name: Run Multi-Database BLAST
+      run: |
+        mkdir -p results
+        for DB in 16S 18S 28S ITS SSU; do
+          echo "Running BLAST on $DB..."
+          blastn \
+            -query data/fasta/query.fa \
+            -db referencedb/$DB/$DB \
+            -out results/${DB}_hits.tsv \
+            -outfmt "6 qseqid sseqid pident length evalue bitscore staxids sscinames"
+        done
+
+    - name: Upload BLAST Results to Azure mloutput
+      run: |
+        az storage blob upload-batch \
+          --account-name YOUR_ACCOUNT_NAME \
+          --destination mloutput \
+          --source results \
+          --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
