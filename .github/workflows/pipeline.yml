@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sample_name:
-        description: "Name of the cleaned FASTQ file in Azure cleandna container"
+        description: "Cleaned FASTQ filename inside cleandna container"
         required: true
 
 jobs:
@@ -15,35 +15,34 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
-    - name: Install BLAST+
-      run: sudo apt-get update && sudo apt-get install -y ncbi-blast+
+    - name: Install dependencies (BLAST+, seqtk, Azure CLI)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ncbi-blast+ seqtk azure-cli
 
-    - name: Install Azure CLI
-      run: sudo apt-get install -y azure-cli
-
-    - name: Download cleaned FASTQ from Azure (cleandna)
+    - name: Download cleaned FASTQ from Azure cleandna
       run: |
         mkdir -p data/cleanedna
         az storage blob download \
-          --account-name YOUR_ACCOUNT_NAME \
+          --account-name deepseabioaistorage \
           --container-name cleandna \
-          --name ${{ github.event.inputs.sample_name }} \
+          --name "${{ github.event.inputs.sample_name }}" \
           --file data/cleanedna/${{ github.event.inputs.sample_name }} \
           --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
 
-    - name: Convert FASTQ → FASTA (required for BLAST)
+    - name: Convert FASTQ → FASTA
       run: |
-        sudo apt-get install -y seqtk
         mkdir -p data/fasta
         seqtk seq -a data/cleanedna/${{ github.event.inputs.sample_name }} > data/fasta/query.fa
 
-    - name: Download ALL Reference Databases (referencedb)
+    - name: Download ALL Reference DB folders (referencedb)
       run: |
         mkdir -p referencedb
         for DB in 16S 18S 28S ITS SSU; do
-          echo "Downloading $DB DB..."
+          mkdir -p referencedb/$DB
+          echo "Downloading DB: $DB"
           az storage blob download-batch \
-            --account-name YOUR_ACCOUNT_NAME \
+            --account-name deepseabioaistorage \
             --source referencedb/$DB \
             --destination referencedb/$DB \
             --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
@@ -52,19 +51,28 @@ jobs:
     - name: Run Multi-Database BLAST
       run: |
         mkdir -p results
+
+        declare -A DBNAMES
+        DBNAMES["16S"]="16S_ribosomal_RNA"
+        DBNAMES["18S"]="18S_fungal_sequences"
+        DBNAMES["28S"]="28S_fungal_sequences"
+        DBNAMES["ITS"]="ITS_RefSeq_Fungi"
+        DBNAMES["SSU"]="SSU_eukaryote_rRNA"
+
         for DB in 16S 18S 28S ITS SSU; do
-          echo "Running BLAST on $DB..."
+          NAME=${DBNAMES[$DB]}
+          echo "Running BLAST for $DB using prefix $NAME"
           blastn \
             -query data/fasta/query.fa \
-            -db referencedb/$DB/$DB \
+            -db referencedb/$DB/$NAME \
             -out results/${DB}_hits.tsv \
-            -outfmt "6 qseqid sseqid pident length evalue bitscore staxids sscinames"
+            -outfmt "6 qseqid sseqid pident length evalue bitscore staxids sscinames" || echo "BLAST failed for $DB"
         done
 
     - name: Upload BLAST Results to Azure mloutput
       run: |
         az storage blob upload-batch \
-          --account-name YOUR_ACCOUNT_NAME \
+          --account-name deepseabioaistorage \
           --destination mloutput \
           --source results \
           --sas-token "${{ secrets.AZURE_SAS_TOKEN }}"
